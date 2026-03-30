@@ -86,24 +86,34 @@ class ZMQSubscriber:
     def __init__(self):
         context = zmq.Context()
         self.socket = context.socket(zmq.PULL)
-        self.socket.setsockopt(zmq.CONFLATE, True)     
+        # We REMOVED the conflate option here so we don't drop packets
         self.socket.connect("tcp://localhost:8000")
-        self._subscriber_thread = threading.Thread(target=self._update_value)
+        
+        # Adding daemon=True ensures the thread dies when you kill the main script
+        self._subscriber_thread = threading.Thread(target=self._update_value, daemon=True)
         self._subscriber_thread.start()
         self._value = None
-        self.last_message = None
     
     @property
     def message(self):
         return self._value
-    #This thread runs in the background and receives the messages
+
+    # This thread runs in the background and drains the buffer instantly
     def _update_value(self):
         while True:
-            message = self.socket.recv()
-            message = message.decode('utf-8')
-            message = message.split(",") 
-            if len(message) == 40:
-                self._value = list(map(float,message[20:40]))  #Get the right hand data (second half of the 40 datapoints coming in)
+            try:
+                # recv(zmq.NOBLOCK) pulls data instantly. If the pipe is empty, it throws a zmq.Again error.
+                message = self.socket.recv(flags=zmq.NOBLOCK)
+                message = message.decode('utf-8')
+                data = message.split(",") 
+                
+                # Only update the hand data if it is the 40-length array we care about
+                if len(data) == 40:
+                    self._value = list(map(float, data[20:40]))
+                    
+            except zmq.Again:
+                # The ZMQ pipe is empty. Sleep for 1 millisecond so we don't peg the CPU at 100%
+                time.sleep(0.001)
 
 
 '''
@@ -129,4 +139,4 @@ if __name__ == "__main__":
             right[12] = 1.5 * right[12]
             right[13] = 1.5 * right[13] + np.deg2rad(90)
             leap_node.set_allegro(right)
-        time.sleep(0.01)
+        time.sleep(0.005)
